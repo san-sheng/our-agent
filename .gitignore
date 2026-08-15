@@ -1,0 +1,11 @@
+# 敏感配置 —— 绝不提交
+config.toml
+
+# OMH 工具的工作目录（与项目无关，工具脚印）
+.omh/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

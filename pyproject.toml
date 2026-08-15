@@ -1,0 +1,17 @@
+[project]
+name = "our-agent"
+version = "0.1.0"
+description = "从零写的 Agent —— 学习项目（Agent = LLM + 上下文 + 工具）"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

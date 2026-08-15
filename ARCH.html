@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>our-agent · 架构图</title>
+<style>
+:root {
+  --ivory:    #FAF9F5; --white: #FFFFFF; --slate: #141413;
+  --clay:     #D97757; --olive: #788C5D; --rust: #B04A3F; --oat: #E3DACC;
+  --gray-150: #F0EEE6; --gray-300: #D1CFC5; --gray-500: #87867F; --gray-700: #3D3D3A;
+  --border: 1.5px solid var(--gray-300);
+  --radius-panel: 12px; --radius-row: 8px; --radius-pill: 999px;
+  --serif: ui-serif, Georgia, "Times New Roman", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--ivory); color: var(--gray-700); font-family: var(--sans);
+       line-height: 1.6; -webkit-font-smoothing: antialiased; padding: 56px 24px 120px; }
+.page { max-width: 1040px; margin: 0 auto; }
+.eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+           text-transform: uppercase; color: var(--gray-500); }
+h1 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em;
+     font-size: 34px; color: var(--slate); margin: 6px 0 4px; }
+h2 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.01em;
+     font-size: 22px; color: var(--slate); margin: 52px 0 14px; }
+h3 { font-family: var(--mono); font-weight: 500; font-size: 13px; color: var(--slate); }
+p.sub { color: var(--gray-500); font-size: 14px; margin-bottom: 8px; }
+.card { background: var(--white); border: var(--border); border-radius: var(--radius-panel);
+        padding: 20px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 860px) { .grid3 { grid-template-columns: 1fr; } }
+.badge { border-radius: 6px; padding: 1px 7px; font-family: var(--mono); font-size: 11px; }
+.badge.done { background: rgba(120,140,93,0.18); color: var(--olive); }
+.badge.planned { background: var(--gray-150); color: var(--gray-500); }
+.pill { border-radius: var(--radius-pill); padding: 2px 10px; font-family: var(--mono);
+        font-size: 11px; background: var(--oat); }
+.callout { background: rgba(217,119,87,0.06); border-left: 3px solid var(--clay);
+           border-radius: var(--radius-row); padding: 14px 16px; margin: 14px 0; }
+.code { font-family: var(--mono); background: var(--slate); color: #E8E6DF;
+        padding: 2px 8px; border-radius: 6px; font-size: 12.5px; }
+.diagram { overflow-x: auto; }
+.diagram svg { min-width: 760px; width: 100%; height: auto; }
+.node rect { fill: var(--white); stroke: var(--gray-300); stroke-width: 1.5; }
+.node.planned rect { fill: var(--gray-150); stroke: var(--gray-500);
+                     stroke-dasharray: 5 4; stroke-width: 1.5; }
+.node text { font-family: var(--mono); }
+.node .th { font-size: 13px; font-weight: 500; fill: var(--slate); }
+.node .ts { font-size: 10.5px; fill: var(--gray-500); }
+.edge { stroke: var(--gray-500); stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+.edge.back { stroke: var(--clay); stroke-dasharray: 5 4; }
+.lbl { font-family: var(--mono); font-size: 10.5px; fill: var(--gray-500); }
+table { width: 100%; border-collapse: collapse; background: var(--white);
+        border: var(--border); border-radius: var(--radius-panel); overflow: hidden; }
+th { background: var(--gray-150); font-family: var(--mono); font-size: 11px;
+     letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray-500);
+     text-align: left; padding: 10px 14px; }
+td { padding: 10px 14px; border-top: 1px solid var(--gray-150);
+     font-size: 13.5px; vertical-align: top; }
+td.mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+.toolgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 14px; }
+.toolcard { background: var(--white); border: var(--border);
+            border-radius: var(--radius-panel); padding: 18px; }
+.toolcard .name { font-family: var(--mono); font-size: 15px; font-weight: 500; color: var(--slate); }
+.toolcard .path { font-family: var(--mono); font-size: 11px; color: var(--gray-500); margin: 2px 0 10px; }
+.toolcard .desc { font-size: 13.5px; margin-bottom: 12px; }
+.toolcard .params { font-family: var(--mono); font-size: 12px; color: var(--gray-500); }
+.toolcard .params b { color: var(--slate); font-weight: 500; }
+.steps { list-style: none; counter-reset: s; }
+.steps li { counter-increment: s; position: relative; padding: 8px 0 8px 44px;
+            font-size: 14px; border-bottom: 1px dashed var(--gray-150); }
+.steps li:last-child { border-bottom: none; }
+.steps li::before { content: counter(s); position: absolute; left: 0; top: 10px;
+  width: 26px; height: 26px; border-radius: 50%; background: var(--oat);
+  color: var(--slate); font-family: var(--mono); font-size: 12px;
+  display: flex; align-items: center; justify-content: center; }
+.foot { margin-top: 64px; color: var(--gray-500); font-size: 12.5px; }
+.mstone { display: flex; align-items: center; gap: 10px; padding: 6px 0;
+          font-size: 14px; border-bottom: 1px dashed var(--gray-150); }
+.mstone:last-child { border-bottom: none; }
+.mstone .tick { width: 18px; height: 18px; border: 1.5px solid var(--gray-300);
+                border-radius: 5px; flex: 0 0 auto; }
+.mstone.done .tick { background: var(--olive); border-color: var(--olive);
+                     position: relative; }
+.mstone.done .tick::after { content: ""; position: absolute; left: 5px; top: 1px;
+  width: 5px; height: 9px; border: solid white; border-width: 0 2px 2px 0;
+  transform: rotate(45deg); }
+.mstone.done { color: var(--gray-500); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="eyebrow">our-agent · 架构图</div>
+    <h1>Agent = LLM + 上下文 + 工具</h1>
+    <p class="sub">由 scripts/gen_arch.py 自动生成 · 2026-08-11 21:59 · 改代码后跑 <span class="code">python scripts/gen_arch.py</span> 即可更新</p>
+  </header>
+
+  <section>
+    <h2>核心公式</h2>
+    <div class="grid3">
+      <div class="card"><h3>LLM · 大脑</h3><p style="font-size:13.5px;margin-top:6px">理解意图、思考规划、做出判断（Policy）。对应 llm/client.py。</p></div>
+      <div class="card"><h3>上下文 · 眼睛</h3><p style="font-size:13.5px;margin-top:6px">每个决策点能看到的全部信息（Observation Space）。M2 深化。</p></div>
+      <div class="card"><h3>工具 · 手脚</h3><p style="font-size:13.5px;margin-top:6px">能做的所有事情（Action Space）。对应 tools/。</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>架构总览</h2>
+    <div class="card diagram"><svg viewBox="0 0 960 500" role="img" aria-label="our-agent 架构总览"><defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1 L8 5 L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs><text class="lbl" x="480" y="24" text-anchor="middle">你输入任务</text><g class="node planned"><rect x="390" y="60" width="180" height="40" rx="8"/><text class="th" x="480" y="72" text-anchor="middle" dominant-baseline="central">cli.py</text><text class="ts" x="480" y="90" text-anchor="middle" dominant-baseline="central">命令行入口</text></g><g class="node planned"><rect x="390" y="150" width="180" height="56" rx="8"/><text class="th" x="480" y="170" text-anchor="middle" dominant-baseline="central">agent/loop.py</text><text class="ts" x="480" y="188" text-anchor="middle" dominant-baseline="central">ReAct 主循环</text></g><g class="node"><rect x="120" y="280" width="220" height="56" rx="8"/><text class="th" x="230" y="300" text-anchor="middle" dominant-baseline="central">llm/client.py</text><text class="ts" x="230" y="318" text-anchor="middle" dominant-baseline="central">LLMClient · 大脑</text></g><g class="node"><rect x="620" y="280" width="220" height="56" rx="8"/><text class="th" x="730" y="300" text-anchor="middle" dominant-baseline="central">tools/registry.py</text><text class="ts" x="730" y="318" text-anchor="middle" dominant-baseline="central">ToolRegistry · 手脚</text></g><g class="node"><rect x="180" y="400" width="180" height="56" rx="8"/><text class="th" x="270" y="420" text-anchor="middle" dominant-baseline="central">read_file</text><text class="ts" x="270" y="438" text-anchor="middle" dominant-baseline="central">tools/builtin/read_file.py</text></g><g class="node"><rect x="390" y="400" width="180" height="56" rx="8"/><text class="th" x="480" y="420" text-anchor="middle" dominant-baseline="central">run_command</text><text class="ts" x="480" y="438" text-anchor="middle" dominant-baseline="central">tools/builtin/run_command.py</text></g><g class="node"><rect x="600" y="400" width="180" height="56" rx="8"/><text class="th" x="690" y="420" text-anchor="middle" dominant-baseline="central">write_file</text><text class="ts" x="690" y="438" text-anchor="middle" dominant-baseline="central">tools/builtin/write_file.py</text></g><line class="edge" x1="480" y1="45" x2="480" y2="60"/><line class="edge" x1="480" y1="100" x2="480" y2="150"/><line class="edge" x1="430" y1="206" x2="230" y2="280"/><line class="edge" x1="530" y1="206" x2="730" y2="280"/><line class="edge" x1="730" y1="336" x2="270" y2="400"/><line class="edge" x1="730" y1="336" x2="480" y2="400"/><line class="edge" x1="730" y1="336" x2="690" y2="400"/><path class="edge back" d="M 760 360 C 900 360, 900 178, 570 178" /><text class="lbl" x="880" y="260" text-anchor="middle">结果回填</text></svg></div>
+    <div class="callout">虚线 = 计划中（文件还没写），实线 = 已实现。写完对应代码再跑一次脚本，虚线会自动变实线。</div>
+  </section>
+
+  <section>
+    <h2>内置工具 <span class="pill">3</span></h2>
+    <div class="toolgrid"><div class="toolcard"><div class="name">read_file</div><div class="path">tools/builtin/read_file.py:26</div><div class="desc">读取文本文件内容。当需要查看代码、配置、日志或文档时使用。只能读取文本文件，不能读取图片等二进制文件。大文件请配合 offset/limit 分段读取，不要一次读整个大文件。</div><span class="params"><b>path *</b>: string · <b>offset</b>: integer · <b>limit</b>: integer</span></div><div class="toolcard"><div class="name">write_file</div><div class="path">tools/builtin/write_file.py:27</div><div class="desc">创建新文件或完全重写已有文件。当需要写入代码、配置、文本内容时使用。注意：这会覆盖目标文件的全部现有内容，不是追加也不是局部修改。只能写文本内容；写文件前若不确定目标内容，先用 read_file 查看。</div><span class="params"><b>path *</b>: string · <b>content *</b>: string</span></div><div class="toolcard"><div class="name">run_command</div><div class="path">tools/builtin/run_command.py:50</div><div class="desc">在 shell 中执行命令。当需要运行程序、查看文件系统、统计信息、执行 git 操作等需要终端能力时使用。注意：只能执行非交互式命令（不会等待用户输入的命令）；禁止执行删除（rm）、格式化（mkfs）、关机（shutdown）、权限修改（chmod/chown）、网络下载（curl/wget）等危险操作；命令输出超过 8000 字符会被截断。</div><span class="params"><b>command *</b>: string</span></div></div>
+  </section>
+
+  <section>
+    <h2>数据流（一次任务怎么走）</h2>
+    <div class="card"><ol class="steps"><li>你输入任务</li><li>[cli.py] 收到输入，交给 agent.loop</li><li>[context.py] 组装消息：system（不变）+ history + 新输入（追加到尾部）</li><li>[llm/client.py] 发给模型 → 返回文本 或 tool_calls[]</li><li>[tools/registry.py] 按名字找到工具函数 → 执行 → 结果作为 tool 消息回填</li><li>回到「组装消息」继续循环（ReAct），直到模型输出最终回答</li><li>[cli.py] 打印回答</li></ol></div>
+  </section>
+
+  <section>
+    <h2>模块清单 <span class="pill">10</span></h2>
+    <table><thead><tr><th>文件</th><th>行数</th><th>类</th><th>依赖</th><th>职责</th></tr></thead><tbody><tr><td class='mono'>agent/__init__.py</td><td>1</td><td>—</td><td>—</td><td></td></tr><tr><td class='mono'>llm/__init__.py</td><td>1</td><td>—</td><td>—</td><td></td></tr><tr><td class='mono'>llm/client.py</td><td>161</td><td><span class="pill" style="margin-right:4px">LLMClient</span></td><td>—</td><td>LLM 客户端 —— Agent 的「大脑」接口。</td></tr><tr><td class='mono'>tools/__init__.py</td><td>15</td><td>—</td><td><span class="pill" style="background:var(--gray-150);margin-right:4px">..base</span><span class="pill" style="background:var(--gray-150);margin-right:4px">..builtin</span><span class="pill" style="background:var(--gray-150);margin-right:4px">..registry</span></td><td>工具系统包：Agent 的「手脚」。</td></tr><tr><td class='mono'>tools/base.py</td><td>68</td><td><span class="pill" style="margin-right:4px">Tool</span></td><td>—</td><td>工具抽象 —— Agent 的「手脚」接口。</td></tr><tr><td class='mono'>tools/builtin/__init__.py</td><td>27</td><td>—</td><td><span class="pill" style="background:var(--gray-150);margin-right:4px">..base</span><span class="pill" style="background:var(--gray-150);margin-right:4px">..registry</span><span class="pill" style="background:var(--gray-150);margin-right:4px">..read_file</span><span class="pill" style="background:var(--gray-150);margin-right:4px">..run_command</span><span class="pill" style="background:var(--gray-150);margin-right:4px">..write_file</span></td><td>内置工具包：M1 的 3 个核心工具。</td></tr><tr><td class='mono'>tools/builtin/read_file.py</td><td>92</td><td><span class="pill" style="margin-right:4px">ReadFile</span></td><td><span class="pill" style="background:var(--gray-150);margin-right:4px">..base</span></td><td>read_file —— 感知工具：读取文本文件内容。</td></tr><tr><td class='mono'>tools/builtin/run_command.py</td><td>125</td><td><span class="pill" style="margin-right:4px">RunCommand</span></td><td><span class="pill" style="background:var(--gray-150);margin-right:4px">..base</span></td><td>run_command —— 执行工具：在 shell 里运行命令。</td></tr><tr><td class='mono'>tools/builtin/write_file.py</td><td>70</td><td><span class="pill" style="margin-right:4px">WriteFile</span></td><td><span class="pill" style="background:var(--gray-150);margin-right:4px">..base</span></td><td>write_file —— 执行工具：创建或完全重写文件。</td></tr><tr><td class='mono'>tools/registry.py</td><td>80</td><td><span class="pill" style="margin-right:4px">ToolRegistry</span></td><td><span class="pill" style="background:var(--gray-150);margin-right:4px">..base</span></td><td>工具注册表 —— 模型看到的「工具名 → Python 函数」的映射。</td></tr></tbody></table>
+  </section>
+
+  <section>
+    <h2>里程碑进度</h2>
+    <div class="card"><div class="mstone"><span class="tick"></span><span>**项目命名**：先叫 our-agent，要不要起个正式名字？</span></div><div class="mstone done"><span class="tick"></span><span>**DeepSeek API key**：已解决（2026-08-02）——key 存项目根 `config.toml`（已 gitignore），`llm/client.py` 用 `tomllib`（Python 3.11 标准库）读取；优先级：显式传参 > config.toml，缺失抛 ValueError</span></div><div class="mstone done"><span class="tick"></span><span>**学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`）</span></div><div class="mstone"><span class="tick"></span><span>**界面**：M1 先用 CLI。要不要一开始就预留 Telegram 接口的位置（只留设计位，不实现）？</span></div><div class="mstone"><span class="tick"></span><span>**git**：要不要建本地 git 仓库管理？建的话用本地分支（我们 Hermes 的经验：自己用的代码别推到官方）</span></div><div class="mstone done"><span class="tick"></span><span>v0.1 设计文档（2026-07-31）</span></div><div class="mstone"><span class="tick"></span><span>M1 最小 ReAct 闭环</span></div><div class="mstone"><span class="tick"></span><span>M2 上下文工程</span></div><div class="mstone"><span class="tick"></span><span>M3 记忆与知识库</span></div><div class="mstone"><span class="tick"></span><span>M4 Coding Agent 深化</span></div><div class="mstone"><span class="tick"></span><span>M5 评估</span></div><div class="mstone"><span class="tick"></span><span>M6 持续进化</span></div><div class="mstone"><span class="tick"></span><span>M7 多 Agent 协作</span></div></div>
+  </section>
+
+  <div class="foot">
+    <p>更新方式：改完代码（新增工具、新模块、勾选里程碑）后执行 <span class="code">python scripts/gen_arch.py</span>，覆盖生成本文件。</p>
+    <p>生成原理：脚本用 Python 标准库 AST 扫描 agent/ llm/ tools/ 的源码与 DESIGN.md，不 import 项目代码，项目暂时跑不起来也能出图。</p>
+  </div>
+
+</div>
+</body>
+</html>
