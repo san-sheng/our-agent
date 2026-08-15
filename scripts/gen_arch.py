@@ -32,6 +32,8 @@ DESIGN_MD = PROJECT_ROOT / "DESIGN.md"
 
 # 架构图的主体扫描范围：这几层是 Agent 的核心组件
 SCAN_DIRS = ["agent", "llm", "tools"]
+# 项目根的关键文件也要扫（cli.py 是入口，架构图里有它的节点）
+ROOT_FILES = ["cli.py"]
 # 排除：生成器自身、测试、笔记
 EXCLUDE = {"scripts", "tests", "NOTES", "notes", ".venv"}
 
@@ -190,6 +192,14 @@ def _collect_modules() -> list[dict[str, Any]]:
             info = _scan_py_file(path)
             if info:
                 modules.append(info)
+    # 项目根的关键文件（cli.py 等）
+    for fname in ROOT_FILES:
+        path = PROJECT_ROOT / fname
+        if not path.exists():
+            continue
+        info = _scan_py_file(path)
+        if info:
+            modules.append(info)
     return modules
 
 
