@@ -166,6 +166,10 @@ our-agent/
 预期行为：Agent 依次调用 read_file → run_command（或直接推理）→ write_file，最后用一句话汇报结果。
 验证标准：stats.txt 内容与真实行数一致，且**再跑一次结果相同**（可复现）。
 
+> ✅ 已验收（2026-08-23）：项目无 README.md，demo 改用 DESIGN.md。
+> 任务「读 DESIGN.md，统计它有多少行，把结果写到 stats.txt」跑两次均写 223，
+> 与 `wc -l DESIGN.md` 一致（两次一致 = 可复现）。
+
 ### 6.4 技术选型（M1）
 
 | 项 | 选择 | 理由 |
@@ -205,7 +209,7 @@ our-agent/
 
 - [ ] **项目命名**：先叫 our-agent，要不要起个正式名字？
 - [x] **DeepSeek API key**：已解决（2026-08-02）——key 存项目根 `config.toml`（已 gitignore），`llm/client.py` 用 `tomllib`（Python 3.11 标准库）读取；优先级：显式传参 > config.toml，缺失抛 ValueError
-- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`），第 3 步 ReAct 主循环已完成（2026-08-15，见 `NOTES/M1-step3-loop.md`）
+- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`），第 3 步 ReAct 主循环已完成（2026-08-15，见 `NOTES/M1-step3-loop.md`），端到端 demo 验收通过（2026-08-23，见 §6.3）
 - [ ] **界面**：M1 先用 CLI。要不要一开始就预留 Telegram 接口的位置（只留设计位，不实现）？
 - [ ] **git**：要不要建本地 git 仓库管理？建的话用本地分支（我们 Hermes 的经验：自己用的代码别推到官方）
 
@@ -214,7 +218,7 @@ our-agent/
 ## 进度
 
 - [x] v0.1 设计文档（2026-07-31）
-- [ ] M1 最小 ReAct 闭环
+- [x] M1 最小 ReAct 闭环（2026-08-23 验收通过：端到端 demo「读 DESIGN.md 统计行数写 stats.txt」两次跑结果一致，223 行）
 - [ ] M2 上下文工程
 - [ ] M3 记忆与知识库
 - [ ] M4 Coding Agent 深化
