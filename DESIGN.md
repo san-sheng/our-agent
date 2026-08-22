@@ -205,7 +205,7 @@ our-agent/
 
 - [ ] **项目命名**：先叫 our-agent，要不要起个正式名字？
 - [x] **DeepSeek API key**：已解决（2026-08-02）——key 存项目根 `config.toml`（已 gitignore），`llm/client.py` 用 `tomllib`（Python 3.11 标准库）读取；优先级：显式传参 > config.toml，缺失抛 ValueError
-- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`）
+- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`），第 3 步 ReAct 主循环已完成（2026-08-15，见 `NOTES/M1-step3-loop.md`）
 - [ ] **界面**：M1 先用 CLI。要不要一开始就预留 Telegram 接口的位置（只留设计位，不实现）？
 - [ ] **git**：要不要建本地 git 仓库管理？建的话用本地分支（我们 Hermes 的经验：自己用的代码别推到官方）
 
