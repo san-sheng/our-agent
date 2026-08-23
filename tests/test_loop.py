@@ -123,6 +123,94 @@ class LoopTest(unittest.TestCase):
         # 只调了 3 次 LLM，没多烧
         self.assertEqual(len(fake.requests), 3)
 
+    # ── M2 多轮对话（会话历史）──
+
+    def test_multi_turn_history(self):
+        """同一 agent 连续 run 两次：第二次的请求包含第一次的完整轨迹（多轮记忆）。"""
+        fake = _FakeClient(
+            [
+                {"role": "assistant", "content": "第一轮回答", "tool_calls": None},
+                {"role": "assistant", "content": "第二轮回答", "tool_calls": None},
+            ]
+        )
+        agent = _make_agent(fake)
+        self.assertEqual(agent.run("第一个问题"), "第一轮回答")
+        self.assertEqual(agent.run("第二个问题"), "第二轮回答")
+
+        # 第二次 run 的第一次请求 = system + 上一轮轨迹(user + assistant) + 新 user
+        first_of_second = fake.requests[1]
+        roles = [m["role"] for m in first_of_second]
+        self.assertEqual(roles, ["system", "user", "assistant", "user"])
+        self.assertEqual(first_of_second[1]["content"], "第一个问题")
+        self.assertEqual(first_of_second[2]["content"], "第一轮回答")
+        self.assertEqual(first_of_second[3]["content"], "第二个问题")
+
+    def test_reset_clears_history(self):
+        """reset() 后下一轮 run 回到干净轨迹（无历史）。"""
+        fake = _FakeClient(
+            [
+                {"role": "assistant", "content": "第一轮回答", "tool_calls": None},
+                {"role": "assistant", "content": "重置后回答", "tool_calls": None},
+            ]
+        )
+        agent = _make_agent(fake)
+        agent.run("问题一")
+        agent.reset()
+        agent.run("问题二")
+        roles = [m["role"] for m in fake.requests[1]]
+        self.assertEqual(roles, ["system", "user"])
+
+    def test_break_does_not_save_history(self):
+        """熔断的任务不写入历史：下一次 run 的请求不含熔断轮的轨迹。"""
+        always_tool = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_tc("c", "run_command", '{"command": "echo x"}')],
+        }
+        fake = _FakeClient([always_tool, always_tool, always_tool])
+        agent = _make_agent(fake, max_iterations=3)
+        agent.run("会死循环吗")
+        # 熔断后 history 应为空：换一个 fake 再跑，请求只有 system + user
+        fake2 = _FakeClient(
+            [{"role": "assistant", "content": "好", "tool_calls": None}]
+        )
+        agent._client = fake2  # type: ignore[assignment]  # 测试注入，鸭子类型
+        agent.run("新问题")
+        roles = [m["role"] for m in fake2.requests[0]]
+        self.assertEqual(roles, ["system", "user"])
+
+    def test_usage_stats_accumulate(self):
+        """带 usage 的响应：cache_stats 跨 run 累计，命中/未命中和正确。"""
+        fake = _FakeClient(
+            [
+                {
+                    "role": "assistant",
+                    "content": "答一",
+                    "tool_calls": None,
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "prompt_cache_hit_tokens": 60,
+                        "prompt_cache_miss_tokens": 40,
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "content": "答二",
+                    "tool_calls": None,
+                    "usage": {
+                        "prompt_tokens": 120,
+                        "prompt_cache_hit_tokens": 100,
+                        "prompt_cache_miss_tokens": 20,
+                    },
+                },
+            ]
+        )
+        agent = _make_agent(fake)
+        agent.run("一")
+        agent.run("二")
+        self.assertEqual(agent.cache_stats["hit"], 160)
+        self.assertEqual(agent.cache_stats["miss"], 60)
+
 
 if __name__ == "__main__":
     unittest.main()

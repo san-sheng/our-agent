@@ -133,6 +133,45 @@ class LLMClientTest(unittest.TestCase):
             str(client._client.base_url).rstrip("/"), "https://api.example.com"
         )
 
+    # ── M2：usage 透传（缓存度量尺子的数据来源）──
+
+    def test_usage_passthrough(self):
+        """usage 透传：标准字段 + DeepSeek 缓存字段（model_extra 里）。"""
+        resp = mock.MagicMock()
+        resp.choices[0].message.content = "hi"
+        resp.choices[0].message.tool_calls = None
+        # 模拟 openai SDK 的 usage 对象：标准字段是命名属性，
+        # DeepSeek 自定义缓存字段被 pydantic 存进 model_extra
+        usage = mock.MagicMock()
+        usage.prompt_tokens = 150
+        usage.completion_tokens = 10
+        usage.total_tokens = 160
+        usage.model_extra = {
+            "prompt_cache_hit_tokens": 100,
+            "prompt_cache_miss_tokens": 50,
+        }
+        resp.usage = usage
+
+        with mock.patch.object(
+            self.client._client.chat.completions, "create", return_value=resp
+        ):
+            result = self.client.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(result["usage"]["prompt_tokens"], 150)
+        self.assertEqual(result["usage"]["prompt_cache_hit_tokens"], 100)
+        self.assertEqual(result["usage"]["prompt_cache_miss_tokens"], 50)
+
+    def test_usage_none_returns_empty(self):
+        """响应没有 usage → 返回空 dict，不报错（容错）。"""
+        resp = mock.MagicMock()
+        resp.choices[0].message.content = "hi"
+        resp.choices[0].message.tool_calls = None
+        resp.usage = None
+        with mock.patch.object(
+            self.client._client.chat.completions, "create", return_value=resp
+        ):
+            result = self.client.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(result["usage"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

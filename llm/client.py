@@ -68,6 +68,28 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
+def _usage_dict(usage: Any) -> dict[str, Any]:
+    """把 SDK 的 usage 对象转成纯 dict，尽量保留 DeepSeek 的缓存字段。
+
+    openai SDK 的 CompletionUsage 只声明了标准字段
+    （prompt/completion/total_tokens）；DeepSeek 额外返回的
+    prompt_cache_hit_tokens / prompt_cache_miss_tokens 是自定义字段，
+    pydantic 默认把它们存进 model_extra 而不是命名属性——所以分两步取。
+    这是 M2 缓存度量尺子的数据来源：命中率 = hit / (hit + miss)。
+    """
+    if usage is None:
+        return {}
+    d = {
+        "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+        "completion_tokens": getattr(usage, "completion_tokens", 0),
+        "total_tokens": getattr(usage, "total_tokens", 0),
+    }
+    extra = getattr(usage, "model_extra", None) or {}
+    for key in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+        d[key] = extra.get(key, 0)
+    return d
+
+
 class LLMClient:
     """封装模型调用的最小客户端。
 
@@ -77,6 +99,8 @@ class LLMClient:
        —— 对应书里说的：每次 API 调用都是无状态的，
           所有模型需要的信息必须在请求的消息列表中完整提供
     3. 重试策略：指数退避 + 抖动（见 chat() 里的注释）
+    4. 返回带 usage：调用方（agent/loop.py）用它观察 token 用量和
+       Prompt Cache 命中率——这是 M2「缓存机制可验证」的度量尺子
     """
 
     def __init__(
@@ -126,7 +150,12 @@ class LLMClient:
 
         messages: 消息列表（system / user / assistant / tool）
         tools:    工具定义列表；None 表示不启用工具调用
-        返回: {"role": "assistant", "content": str | None, "tool_calls": [...] | None}
+        返回: {
+            "role": "assistant",
+            "content": str | None,
+            "tool_calls": [...] | None,
+            "usage": {...},   # token 用量 + Prompt Cache 命中统计（M2 度量尺子）
+        }
 
         tool_calls 保留 SDK 原始对象（ChatCompletionMessageToolCall），
         由调用方（agent/loop.py）决定怎么解析——LLM 客户端不关心循环逻辑。
@@ -143,6 +172,7 @@ class LLMClient:
                     "role": "assistant",
                     "content": msg.content,
                     "tool_calls": msg.tool_calls,
+                    "usage": _usage_dict(resp.usage),
                 }
             except Exception as exc:
                 if not _is_retryable(exc):

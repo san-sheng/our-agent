@@ -67,22 +67,40 @@ class Agent:
         self._registry = registry
         self.max_iterations = max_iterations
         self.verbose = verbose
+        # M2 多轮会话：跨 run 的历史 + 缓存命中统计（度量尺子）
+        self._history: list[dict[str, Any]] = []
+        self.cache_stats: dict[str, int] = {"hit": 0, "miss": 0}
 
     def run(self, task: str) -> str:
         """执行一个任务，返回最终回答字符串。
 
-        轨迹是本方法的局部变量：一次任务一条完整轨迹，
-        从 system + 用户任务开始，逐步累积 assistant / tool 消息。
+        M2 多轮对话：轨迹分两层——
+        - self._history：跨 run 的会话历史（上一次任务留下的完整轨迹）
+        - 本次 messages：system + history + 新 user 任务
+
+        任务完成后本次轨迹存回 history，下一轮 run 就能看到上一轮
+        做了什么、得到了什么——这就是「多轮记忆」（会话内）。
+        跨任务的长期记忆是 M3 的事，M2 只做会话内记忆。
+
+        熔断时不保存轨迹：未完成的任务会误导下一轮（看着像做完了），
+        而且熔断往往是一堆重复失败的工具调用，保存只会膨胀上下文。
         """
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
+            *self._history,
             {"role": "user", "content": task},
         ]
+        # 新 user 消息的位置（初始 messages 的最后一个元素）。
+        # 任务完成后 messages[user_start:] 就是本次新增的完整轨迹：
+        # 从新 user 开始，到最终 assistant 回答结束。
+        user_start = len(messages) - 1
         # 工具定义也是静态前缀的一部分：每轮都原样发送（KV Cache 友好）
         schemas = self._registry.schemas()
 
         for iteration in range(self.max_iterations):
             resp = self._client.chat(messages, tools=schemas)
+            # 记录每个响应的 token 用量 + 缓存命中（M2 度量尺子）
+            self._record_usage(resp.get("usage") or {})
             content = resp.get("content")
             raw_tool_calls = resp.get("tool_calls") or []
 
@@ -112,6 +130,8 @@ class Agent:
                 answer = content if content is not None else "(模型没有输出内容)"
                 if self.verbose:
                     print(f"\n[Agent] 完成（第 {iteration + 1} 轮）")
+                # 任务成功完成 → 本次轨迹（新 user 起的所有消息）存入会话历史
+                self._history.extend(messages[user_start:])
                 return answer
 
             if self.verbose:
@@ -137,8 +157,41 @@ class Agent:
                 )
             # 回到循环顶部：模型看到完整轨迹（含工具结果）继续思考
 
-        # 熔断：达到 max_iterations 还没出最终回答
+        # 熔断：达到 max_iterations 还没出最终回答。
+        # 注意这里不保存历史（见 run docstring 的设计取舍）。
         last = messages[-1]
         last_content = last.get("content") if isinstance(last, dict) else None
         hint = f"模型最后输出: {last_content[:200]}" if last_content else "模型没有输出内容"
         return f"任务未完成：已达到最大迭代次数 {self.max_iterations}。{hint}"
+
+    def reset(self) -> None:
+        """清空会话历史与缓存统计（REPL 的「新会话」命令用）。
+
+        回到 M1 的单任务模式：下一轮 run 从干净的 system + user 开始。
+        """
+        self._history.clear()
+        self.cache_stats = {"hit": 0, "miss": 0}
+
+    def _record_usage(self, usage: dict[str, Any]) -> None:
+        """累计本轮 token 用量与 Prompt Cache 命中（M2 度量尺子）。
+
+        DeepSeek 的 usage 字段：
+        - prompt_cache_hit_tokens: 命中服务商缓存的前缀 token 数
+        - prompt_cache_miss_tokens: 未命中、需重新计算的 token 数
+        命中率 = hit / (hit + miss)。前缀稳定时应该接近 100%——
+        哪天命中率掉下来，就是哪里破坏了缓存前缀（如改了 system prompt）。
+
+        FakeClient（测试）可能不返回 usage —— .get(..., 0) 兜底为 0，
+        不影响循环逻辑（度量是附加信息，不是核心依赖）。
+        """
+        hit = int(usage.get("prompt_cache_hit_tokens", 0) or 0)
+        miss = int(usage.get("prompt_cache_miss_tokens", 0) or 0)
+        self.cache_stats["hit"] += hit
+        self.cache_stats["miss"] += miss
+        if self.verbose:
+            total = hit + miss
+            rate = f"{hit / total:.0%}" if total else "n/a"
+            print(
+                f"[usage] prompt={usage.get('prompt_tokens', 0)} "
+                f"cache_hit={hit} miss={miss} 命中率={rate}"
+            )
