@@ -293,11 +293,11 @@ def _render_svg(modules: list[dict[str, Any]]) -> str:
             "planned" if "cli.py" not in done_files else "done",
         ),
         _node(
-            390, 150, 180, 56, "agent/loop.py", "ReAct 主循环",
+            390, 150, 180, 56, "agent/loop.py", "ReAct 循环 · 多轮会话",
             "planned" if "agent/loop.py" not in done_files else "done",
         ),
         _node(
-            120, 280, 220, 56, "llm/client.py", "LLMClient · 大脑",
+            120, 280, 220, 56, "llm/client.py", "LLMClient · 大脑 · usage",
             "planned" if "llm/client.py" not in done_files else "done",
         ),
         _node(
@@ -548,7 +548,7 @@ def render_html(data: dict[str, Any]) -> str:
     <h2>核心公式</h2>
     <div class="grid3">
       <div class="card"><h3>LLM · 大脑</h3><p style="font-size:13.5px;margin-top:6px">理解意图、思考规划、做出判断（Policy）。对应 llm/client.py。</p></div>
-      <div class="card"><h3>上下文 · 眼睛</h3><p style="font-size:13.5px;margin-top:6px">每个决策点能看到的全部信息（Observation Space）。M2 深化。</p></div>
+      <div class="card"><h3>上下文 · 眼睛</h3><p style="font-size:13.5px;margin-top:6px">每个决策点能看到的全部信息（Observation Space）。M2 已实现多轮会话，状态栏/压缩进行中。</p></div>
       <div class="card"><h3>工具 · 手脚</h3><p style="font-size:13.5px;margin-top:6px">能做的所有事情（Action Space）。对应 tools/。</p></div>
     </div>
   </section>

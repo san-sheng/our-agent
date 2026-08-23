@@ -68,11 +68,11 @@ our-agent/
 ├── DESIGN.md          # 本文档
 ├── NOTES/             # 每里程碑的学习笔记（M1-notes.md ...）
 ├── agent/
-│   ├── loop.py        # ReAct 主循环（M1）
+│   ├── loop.py        # ReAct 主循环 + 多轮会话（M1；M2 加会话历史/缓存统计）
 │   ├── context.py     # 上下文组装与管理（M1 起步，M2 深化）
 │   └── state.py       # 会话状态（M2）
 ├── llm/
-│   └── client.py      # LLM 客户端：OpenAI 兼容封装 + 重试（M1）
+│   └── client.py      # LLM 客户端：OpenAI 兼容封装 + 重试 + usage 度量（M1；M2 加缓存尺子）
 ├── tools/
 │   ├── registry.py    # 工具注册表：名字→函数、schema 生成（M1）
 │   ├── base.py        # Tool 抽象（M1）
@@ -90,6 +90,8 @@ our-agent/
 [cli.py] 收到输入，交给 agent.loop
    ↓
 [context.py] 组装消息：system（不变）+ history + 新输入（追加到尾部）
+   （M2 第 1 步已实现：history 由 agent/loop.py 的 self._history 提供，
+    context.py 独立模块留待 M2 后续提取）
    ↓
 [llm/client.py] 发给模型 → 返回文本 或 tool_calls[]
    ↓ 如果是 tool_calls
@@ -209,7 +211,7 @@ our-agent/
 
 - [ ] **项目命名**：先叫 our-agent，要不要起个正式名字？
 - [x] **DeepSeek API key**：已解决（2026-08-02）——key 存项目根 `config.toml`（已 gitignore），`llm/client.py` 用 `tomllib`（Python 3.11 标准库）读取；优先级：显式传参 > config.toml，缺失抛 ValueError
-- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`），第 3 步 ReAct 主循环已完成（2026-08-15，见 `NOTES/M1-step3-loop.md`），端到端 demo 验收通过（2026-08-23，见 §6.3）
+- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`），第 3 步 ReAct 主循环已完成（2026-08-15，见 `NOTES/M1-step3-loop.md`），端到端 demo 验收通过（2026-08-23，见 §6.3）。M2 拆小步（多轮对话 → 状态栏 → 提示注入 → Skills），第 1 步多轮会话 + 缓存度量已完成（2026-08-23，见 `NOTES/M2-step1-context.md`）
 - [ ] **界面**：M1 先用 CLI。要不要一开始就预留 Telegram 接口的位置（只留设计位，不实现）？
 - [ ] **git**：要不要建本地 git 仓库管理？建的话用本地分支（我们 Hermes 的经验：自己用的代码别推到官方）
 
@@ -219,7 +221,7 @@ our-agent/
 
 - [x] v0.1 设计文档（2026-07-31）
 - [x] M1 最小 ReAct 闭环（2026-08-23 验收通过：端到端 demo「读 DESIGN.md 统计行数写 stats.txt」两次跑结果一致，223 行）
-- [ ] M2 上下文工程
+- [ ] M2 上下文工程（进行中：第 1 步多轮会话 + 缓存度量完成，2026-08-23）
 - [ ] M3 记忆与知识库
 - [ ] M4 Coding Agent 深化
 - [ ] M5 评估
