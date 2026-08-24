@@ -7,15 +7,21 @@
 （{"role", "content", "tool_calls"}），不关心背后是不是真模型——
 把「模型行为」参数化，测的是框架（Harness），这正是 Harness 工程的思想：
 模型之外的部分可以且应该被确定性测试。
+
+M2 第 2 步：每轮请求末尾会被注入一条状态栏 meta 消息（user 角色）。
+断言轨迹结构时用 _strip_status() 滤掉它——状态栏是框架的「仪表盘」，
+不属于对话主体；断言失败摘要时则直接查 history 里的 [UNFINISHED] 块。
 """
 
 from __future__ import annotations
 
 import json
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
+from typing import Callable
 
-from agent.loop import Agent
+from agent.loop import STATUS_BAR_HEADER, UNFINISHED_HEADER, Agent
 from llm.client import LLMClient
 from tools.builtin import default_registry
 
@@ -44,10 +50,32 @@ class _FakeClient:
         return self._responses.pop(0)
 
 
-def _make_agent(fake: _FakeClient, max_iterations: int = 10) -> Agent:
+def _make_agent(
+    fake: _FakeClient, max_iterations: int = 10, clock: Callable | None = None
+) -> Agent:
     # 类型上 client 是 LLMClient，但 FakeClient 实现了相同的 chat 接口——
     # 鸭子类型，测试注入用
-    return Agent(fake, default_registry(), max_iterations=max_iterations, verbose=False)  # type: ignore[arg-type]
+    kwargs: dict = {}
+    if clock is not None:
+        kwargs["clock"] = clock
+    return Agent(fake, default_registry(), max_iterations=max_iterations, verbose=False, **kwargs)  # type: ignore[arg-type]
+
+
+def _strip_status(messages: list[dict]) -> list[dict]:
+    """滤掉框架注入的状态栏 meta 消息，剩下核心轨迹。
+
+    状态栏是上下文末尾的 user-role meta 消息（书 Ch2 §2.6），
+    不属于对话主体；断言轨迹结构时先滤掉，断言才聚焦在「轨迹」本身。
+    """
+    return [
+        m
+        for m in messages
+        if not (
+            m["role"] == "user"
+            and isinstance(m.get("content"), str)
+            and m["content"].startswith(STATUS_BAR_HEADER)
+        )
+    ]
 
 
 class LoopTest(unittest.TestCase):
@@ -81,7 +109,8 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(agent.run("跑个命令"), "执行结果：hello")
 
         # 验证轨迹累积：第二次请求里包含 system + user + assistant(tool_calls) + tool
-        second = fake.requests[1]
+        # （滤掉状态栏 meta 消息后，剩下的是核心轨迹）
+        second = _strip_status(fake.requests[1])
         roles = [m["role"] for m in second]
         self.assertEqual(roles, ["system", "user", "assistant", "tool"])
         # tool 消息带 tool_call_id（协议要求），内容里有执行结果
@@ -106,7 +135,7 @@ class LoopTest(unittest.TestCase):
         agent = _make_agent(fake)
         self.assertEqual(agent.run("读文件"), "我修正参数")
         # tool 消息内容包含 JSON 解析错误提示
-        tool_msg = fake.requests[1][-1]
+        tool_msg = _strip_status(fake.requests[1])[-1]
         self.assertIn("不是合法 JSON", tool_msg["content"])
 
     def test_max_iterations_break(self):
@@ -138,7 +167,8 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(agent.run("第二个问题"), "第二轮回答")
 
         # 第二次 run 的第一次请求 = system + 上一轮轨迹(user + assistant) + 新 user
-        first_of_second = fake.requests[1]
+        # （滤掉状态栏 meta 消息）
+        first_of_second = _strip_status(fake.requests[1])
         roles = [m["role"] for m in first_of_second]
         self.assertEqual(roles, ["system", "user", "assistant", "user"])
         self.assertEqual(first_of_second[1]["content"], "第一个问题")
@@ -157,27 +187,43 @@ class LoopTest(unittest.TestCase):
         agent.run("问题一")
         agent.reset()
         agent.run("问题二")
-        roles = [m["role"] for m in fake.requests[1]]
+        roles = [m["role"] for m in _strip_status(fake.requests[1])]
         self.assertEqual(roles, ["system", "user"])
 
-    def test_break_does_not_save_history(self):
-        """熔断的任务不写入历史：下一次 run 的请求不含熔断轮的轨迹。"""
+    def test_break_saves_unfinished_summary(self):
+        """熔断后写 [UNFINISHED] 摘要进 history（2026-08-24 拍板）。
+
+        不存原始垃圾轨迹（一堆重复失败的工具调用），只存一条键值对摘要：
+        任务目标 / 已完成 / 下一步 / 失败点。下一轮 run 能看到失败原因，
+        从而能「接着办完」该任务。
+        """
         always_tool = {
             "role": "assistant",
             "content": "",
             "tool_calls": [_tc("c", "run_command", '{"command": "echo x"}')],
         }
         fake = _FakeClient([always_tool, always_tool, always_tool])
-        agent = _make_agent(fake, max_iterations=3)
+        clock = lambda: datetime(2026, 8, 25, 1, 2, 3)
+        agent = _make_agent(fake, max_iterations=3, clock=clock)
         agent.run("会死循环吗")
-        # 熔断后 history 应为空：换一个 fake 再跑，请求只有 system + user
+
+        # 换一个 fake，模拟用户在同一会话里继续追问
         fake2 = _FakeClient(
             [{"role": "assistant", "content": "好", "tool_calls": None}]
         )
         agent._client = fake2  # type: ignore[assignment]  # 测试注入，鸭子类型
         agent.run("新问题")
-        roles = [m["role"] for m in fake2.requests[0]]
-        self.assertEqual(roles, ["system", "user"])
+        stripped = _strip_status(fake2.requests[0])
+        # history 只存了一条：任务 user 消息 + [UNFINISHED] 摘要（没有垃圾轨迹）
+        roles = [m["role"] for m in stripped]
+        self.assertEqual(roles, ["system", "user", "user"])
+        summary = stripped[1]["content"]
+        self.assertIn(UNFINISHED_HEADER, summary)
+        self.assertIn("时间: 2026-08-25 01:02:03", summary)
+        self.assertIn("任务目标: 会死循环吗", summary)
+        self.assertIn("已完成: 工具调用 3 次（run_command×3）", summary)
+        self.assertIn("下一步: 输出最终回答（未完成）", summary)
+        self.assertIn("失败点: 达到最大迭代次数 3（熔断）", summary)
 
     def test_usage_stats_accumulate(self):
         """带 usage 的响应：cache_stats 跨 run 累计，命中/未命中和正确。"""
@@ -210,6 +256,66 @@ class LoopTest(unittest.TestCase):
         agent.run("二")
         self.assertEqual(agent.cache_stats["hit"], 160)
         self.assertEqual(agent.cache_stats["miss"], 60)
+
+    # ── M2 第 2 步：Agent 状态栏（时间戳 + 工具计数 + TODO）──
+
+    def test_status_bar_injected_each_request(self):
+        """每轮请求末尾注入状态栏（user-role meta 消息，书 Ch2 §2.6）。
+
+        三格信息：时间戳（注入时钟，可复现）/ 工具计数 / TODO 进度。
+        """
+        fake = _FakeClient(
+            [{"role": "assistant", "content": "好", "tool_calls": None}]
+        )
+        agent = _make_agent(fake, clock=lambda: datetime(2026, 8, 25, 1, 2, 3))
+        agent.run("简单任务")
+        status = fake.requests[0][-1]
+        self.assertEqual(status["role"], "user")
+        self.assertTrue(status["content"].startswith(STATUS_BAR_HEADER))
+        self.assertIn("时间: 2026-08-25 01:02:03", status["content"])
+        self.assertIn("工具: 已调用 0 次（无）", status["content"])
+        self.assertIn("进度: 第 1/10 轮", status["content"])
+        self.assertIn("TODO: 输出最终回答", status["content"])
+
+    def test_status_bar_updates_tool_counts(self):
+        """工具循环中状态栏实时更新：第二轮的工具计数反映第一轮的调用。"""
+        fake = _FakeClient(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [_tc("call_1", "run_command", '{"command": "echo hello"}')],
+                },
+                {"role": "assistant", "content": "好", "tool_calls": None},
+            ]
+        )
+        agent = _make_agent(fake)
+        agent.run("跑个命令")
+        status2 = fake.requests[1][-1]
+        self.assertIn("工具: 已调用 1 次（run_command×1）", status2["content"])
+        self.assertIn("进度: 第 2/10 轮", status2["content"])
+
+    def test_status_bar_not_persisted_to_history(self):
+        """状态栏是 meta 消息，不属于对话主体 —— 不进会话历史。
+
+        否则上一轮的过期状态（旧时间、旧计数）会污染多轮记忆。
+        多轮请求里 history 部分应该是「干干净净」的任务文本。
+        """
+        fake = _FakeClient(
+            [
+                {"role": "assistant", "content": "第一轮回答", "tool_calls": None},
+                {"role": "assistant", "content": "第二轮回答", "tool_calls": None},
+            ]
+        )
+        agent = _make_agent(fake)
+        agent.run("第一个问题")
+        agent.run("第二个问题")
+        first_of_second = fake.requests[1]
+        # history 里的任务消息不带状态栏
+        self.assertEqual(first_of_second[1]["content"], "第一个问题")
+        self.assertNotIn(STATUS_BAR_HEADER, first_of_second[1]["content"])
+        # 状态栏只出现在本次请求的末尾
+        self.assertIn(STATUS_BAR_HEADER, first_of_second[-1]["content"])
 
 
 if __name__ == "__main__":
