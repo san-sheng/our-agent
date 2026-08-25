@@ -92,8 +92,10 @@ our-agent/
 [context.py] 组装消息：system（不变）+ history + 新输入（追加到尾部）
    （M2 第 1 步已实现：history 由 agent/loop.py 的 self._history 提供，
     context.py 独立模块留待 M2 后续提取）
-   （M2 第 2 步已实现：每轮请求末尾注入状态栏——时间戳/工具计数/进度+TODO，
-    书 Ch2 §2.6「提炼层」；只进请求不进历史；熔断时写 [UNFINISHED] 摘要进 history）
+   （M2 第 2 步已实现：每轮请求末尾注入状态栏——时间戳/工具计数/失败计数/
+     进度（剩余预算+临近警告）/TODO，书 Ch2 §2.6「提炼层」；只进请求不进历史；
+     2026-08-25 修订去虚：失败统计 + 剩余预算替换无信息量格子；
+     熔断时写 [UNFINISHED] 摘要进 history）
    ↓
 [llm/client.py] 发给模型 → 返回文本 或 tool_calls[]
    ↓ 如果是 tool_calls

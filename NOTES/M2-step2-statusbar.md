@@ -1,10 +1,14 @@
 # M2 学习笔记 —— 第 2 步：Agent 状态栏 + 熔断摘要
 
 > 日期：2026-08-25（生活日）
-> 内容：`agent/loop.py` 状态栏注入（时间戳 / 工具计数 / 进度 + TODO）+ 熔断 [UNFINISHED] 摘要
-> 状态：✅ 完成（代码 + 测试 39 绿 + 真实 API 冒烟）
+> 内容：`agent/loop.py` 状态栏注入（时间戳 / 工具计数 / 失败计数 / 进度 + TODO）+ 熔断 [UNFINISHED] 摘要
+> 状态：✅ 完成（代码 + 测试 41 绿 + 真实 API 冒烟）
 > 对应书：Ch2 §2.6 Agent 状态栏（上下文末尾的 user-role meta 消息；提炼层；上下文蒸馏）
 > 落点：2026-08-24 拍板「熔断 [UNFINISHED] 摘要与状态栏一起实现」在此落实
+> 修订（同日去虚化）：状态栏只留模型「现算成本高/容易忽略」的隐式状态——
+> 工具计数降级为失败统计（模型自己知道调了几次，但容易忽略反复失败）、
+> 进度格改为剩余轮数预算 + 临近熔断警告（模型不知道 max_iterations）；
+> TODO 保留常量等 M4 任务规划器。测试 39 → 41 绿（+失败统计、+临近警告）。
 
 ---
 
@@ -13,8 +17,8 @@
 M2 第 2 步做两件事：
 
 1. **状态栏**：每轮请求**末尾**注入一条 user-role meta 消息——时间戳 / 工具计数 /
-   进度（本轮第几轮）/ TODO。模型每次生成前「瞥一眼」就知道自己干到哪了，
-   不用再从几千个 token 的原始轨迹里现算。
+   失败计数 / 进度（剩余轮数预算 + 临近熔断警告）/ TODO。模型每次生成前「瞥一眼」
+   就知道自己干到哪了，不用再从几千个 token 的原始轨迹里现算。
 2. **熔断摘要**（落实 2026-08-24 拍板）：任务熔断时不再「什么都不留」，
    生成一条复用状态栏格式的 `[UNFINISHED]` 摘要
    （任务目标 / 已完成 / 下一步 / 失败点）写入 history，
@@ -53,15 +57,39 @@ M2 第 2 步做两件事：
 - **性质**：系统提示词是「入职时发的员工手册，定下来就不变」；
   状态栏是「贴在屏幕边缘的实时仪表盘，随任务推进不断更新」
 
-我们定的三格（M2 第 2 步规划）：
+我们定的格子（M2 第 2 步规划；2026-08-25 修订去虚）：
 
 ```text
 【状态栏】
 时间: 2026-08-25 02:40:30
 工具: 已调用 0 次（无）
-进度: 第 1/10 轮
+失败: 无
+进度: 第 1/10 轮（剩余 9 轮）
 TODO: 输出最终回答
 ```
+
+临近熔断（剩余 ≤ 3 轮）时追加「请收敛」警告行：
+
+```text
+【状态栏】
+时间: 2026-08-25 02:40:30
+工具: 已调用 5 次（run_command×3、read_file×2）
+失败: run_command×1
+进度: 第 7/10 轮（剩余 3 轮）
+⚠ 剩余 3 轮：请收敛，尽快输出最终回答
+TODO: 输出最终回答
+```
+
+**格子取舍（修订去虚的依据）**——状态栏是提炼层，只放模型
+「现算成本高 / 容易算错 / 容易忽略」的隐式状态，不是复读显式状态：
+
+| 格子 | 模型为什么需要 | 虚不虚 |
+|------|--------------|--------|
+| 时间 | 跨轮/跨天任务的时间锚点；测试靠它可复现（clock 注入） | 单任务里偏虚，保留（成本低） |
+| 工具计数 | 汇总数字模型能现算（上下文小，成本低）——**半虚** | 修订后保留但降级 |
+| 失败计数 | 模型会反复调同一个失败工具而不自知——ReAct 死循环最常见诱因 | **修订新增**，最有价值 |
+| 进度（剩余预算） | 模型不知道 max_iterations，临近熔断必须提醒它收尾 | 原「第 X/N 轮」前期无信息量，**修订为剩余+警告** |
+| TODO | 恒为「输出最终回答」= 常量废话 | 已知短板，等 M4 任务规划器升级成真步骤清单 |
 
 ## 3. 三条实践铁律 + 一个风险
 
@@ -69,7 +97,8 @@ TODO: 输出最终回答
 一个 20 行的正则函数就能达到「标准答案」级别；让前沿大模型**一次性**读完整段
 历史、吐出统计结果，反而在大多数格子上出错，把下游准确率拖得比不用还低。
 （要让 LLM 抽，也要逐条抽取、再由代码汇总，绝不让它批量统计。）
-→ 我们的工具计数就是循环里 `tool_counts[name] += 1`，纯代码。
+→ 我们的工具计数 / 失败计数都是循环里代码累加
+  （`tool_counts[name] += 1`、`tool_failures[name] += 1`），纯代码，不经过大模型。
 
 **二、想删掉原始上下文之前，先确认状态栏覆盖了所有会被问到的问题。**
 状态栏是**有损投影**——只提前算了「预想会被问到」的维度。问到一个没算过的维度，
@@ -93,7 +122,10 @@ TODO: 输出最终回答
 
 ```python
 req = list(messages) + [
-    {"role": "user", "content": self._status_bar(iteration + 1, tool_counts)}
+    {
+        "role": "user",
+        "content": self._status_bar(iteration + 1, tool_counts, tool_failures),
+    }
 ]
 resp = self._client.chat(req, tools=schemas)
 ```
@@ -119,7 +151,7 @@ clock: Callable[[], datetime] = datetime.now
 熔断路径从「什么都不留」改成：
 
 ```python
-summary = self._unfinished_summary(task, tool_counts)
+summary = self._unfinished_summary(task, tool_counts, tool_failures)
 failed_user = dict(messages[user_start])
 failed_user["content"] = f"{failed_user['content']}\n\n{summary}"
 self._history.append(failed_user)
@@ -136,7 +168,7 @@ self._history.append(failed_user)
 完全不保存 → 「接着办完」无从下手；存原始轨迹 → 半截子轨迹看着像做完了，
 反而误导（M2 第 1 步笔记 §2.1 讨论过的取舍）。
 
-## 5. 测试策略（39 绿）
+## 5. 测试策略（41 绿）
 
 ### 5.1 状态栏是 meta 消息：断言轨迹前先滤掉
 
@@ -147,14 +179,16 @@ self._history.append(failed_user)
 注意：`【状态栏 · UNFINISHED】` 不以 `【状态栏】` 开头（栏后面是空格），
 所以失败摘要在断言里不会被滤掉——正是我们要查的。
 
-### 5.2 用例清单（新增/改造，共 4 个）
+### 5.2 用例清单（新增/改造，共 6 个）
 
 | 用例 | 验证点 |
 |------|--------|
-| `test_status_bar_injected_each_request`（新） | 每轮请求末尾是 user 消息，含时间戳（注入时钟）/ 工具计数 0 次 / 进度第 1/10 轮 / TODO |
-| `test_status_bar_updates_tool_counts`（新） | 工具循环后第二轮状态栏反映「已调用 1 次（run_command×1）」、第 2/10 轮 |
+| `test_status_bar_injected_each_request`（改造） | 每轮请求末尾是 user 消息，含时间戳（注入时钟）/ 工具计数 0 次 / 失败: 无 / 进度第 1/10 轮（剩余 9 轮）/ TODO；剩余 9 轮 > 阈值 → 无「⚠」警告 |
+| `test_status_bar_updates_tool_counts`（改造） | 工具循环后第二轮状态栏反映「已调用 1 次（run_command×1）」「失败: 无」、第 2/10 轮（剩余 8 轮） |
+| `test_status_bar_counts_failures`（新，修订） | 幻觉调用不存在的工具 → 第二轮「工具: 已调用 1 次（no_such_tool×1）」「失败: no_such_tool×1」——失败计入状态栏 |
+| `test_status_bar_warns_near_max`（新，修订） | max_iterations=4：剩余 3 轮（阈值边界）即出现「⚠ 剩余 3 轮：请收敛」，剩余 2 轮持续 |
 | `test_status_bar_not_persisted_to_history`（新） | 状态栏不进会话历史：多轮请求里 history 部分干净，状态栏只出现在末尾 |
-| `test_break_saves_unfinished_summary`（改造） | 熔断后 history 只有一条：任务消息 + `[UNFINISHED]` 摘要（4 字段齐全），无工具垃圾轨迹；下轮请求含它 |
+| `test_break_saves_unfinished_summary`（改造） | 熔断后 history 只有一条：任务消息 + `[UNFINISHED]` 摘要（4 字段齐全，含失败统计），无工具垃圾轨迹；下轮请求含它 |
 
 （原 `test_break_does_not_save_history` 按拍板删除——行为已变。）
 
@@ -172,7 +206,7 @@ R1 返回: 任务未完成：已达到最大迭代次数 2。……
 【状态栏 · UNFINISHED】
 时间: 2026-08-25 02:40:30
 任务目标: 读 DESIGN.md，统计有多少行，把结果写到 /tmp/our-agent-stats.txt
-已完成: 工具调用 2 次（read_file×1、write_file×1）
+已完成: 工具调用 2 次（read_file×1、write_file×1），失败 0 次（无）
 下一步: 输出最终回答（未完成）
 失败点: 达到最大迭代次数 2（熔断）
 
@@ -215,6 +249,8 @@ read_file 和 write_file 两步，还没来得及输出最终回答，所以状�
 - context.py / state.py 独立模块的提取（当前 history/状态栏内联在 loop.py）
 - 状态栏的 TODO 目前是「输出最终回答」单格——将来有任务规划后（M4），
   状态栏可以升级成真正的步骤清单（书中「TODO 还剩 2 项」的形态）
+- 2026-08-25 修订遗留：失败统计只记次数不记原因（错误详情本来就在 tool 消息里）；
+  若真实 API 冒烟发现模型仍会忽略失败，可考虑把「最后一个错误摘要」也加进状态栏
 
 ---
 

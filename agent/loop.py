@@ -31,10 +31,13 @@
    重试已由 llm/client.py 处理（API 层：指数退避 + 抖动）。
    重试耗尽 = 无法恢复的错误，loop 层不假装能处理，抛给 CLI 层显示。
 
-7. 状态栏（M2 第 2 步，书 Ch2 §2.6）
-   每轮请求末尾注入一条 user-role meta 消息：时间戳 / 工具计数 / TODO。
+7. 状态栏（M2 第 2 步，书 Ch2 §2.6；2026-08-25 修订去虚）
+   每轮请求末尾注入一条 user-role meta 消息：
+   时间戳 / 工具计数 / 失败计数 / 剩余轮数预算（临近熔断追加警告）/ TODO。
    「上下文窗口是一台只有一半的检索引擎」——模型擅长检索、不擅长归纳，
-   状态栏就是那个「提炼层」。三条铁律：
+   状态栏就是那个「提炼层」。只提炼模型「现算成本高、容易忽略」的隐式状态：
+   工具计数模型自己知道，但失败统计（反复调同一个失败工具）它不一定会数；
+   剩余预算它完全不知道。三条铁律：
    - 用代码维护，绝不让大模型去读历史总结（20 行代码就够的事）
    - 写成键值对，不是散文（散文 = 让模型重新扫描一遍，效果更差）
    - 模型无条件信任状态栏 → 内容必须准确，且只来自可信观测
@@ -73,6 +76,9 @@ SYSTEM_PROMPT = (
 # 与对话主体（用户任务、模型回答）区分开。
 STATUS_BAR_HEADER = "【状态栏】"
 UNFINISHED_HEADER = "【状态栏 · UNFINISHED】"
+# 熔断预警阈值：剩余轮数 ≤ 这个值时，状态栏追加「请收敛」警告行。
+# 模型不知道 max_iterations 预算，临近上限时必须提醒它收尾，否则白烧 token。
+WARN_THRESHOLD = 3
 
 
 class Agent:
@@ -128,6 +134,9 @@ class Agent:
         # 本轮工具调用计数 —— 状态栏的数据来源，用代码维护
         # （书 Ch2 §2.6：状态栏绝不让大模型去「读历史总结」）
         tool_counts: dict[str, int] = {}
+        # 本轮工具失败计数 —— 模型容易忽略自己反复调同一个失败工具，
+        # 状态栏替它提炼出来（错误是模型的输入，但模型不一定会数）
+        tool_failures: dict[str, int] = {}
 
         for iteration in range(self.max_iterations):
             # 状态栏：上下文末尾的 user-role meta 消息（书 Ch2 §2.6）。
@@ -135,7 +144,12 @@ class Agent:
             # 只拼进请求副本（req），不进核心轨迹 messages——
             # 会话历史不被过期状态栏污染，也守住「历史只追加不改写」。
             req = list(messages) + [
-                {"role": "user", "content": self._status_bar(iteration + 1, tool_counts)}
+                {
+                    "role": "user",
+                    "content": self._status_bar(
+                        iteration + 1, tool_counts, tool_failures
+                    ),
+                }
             ]
             resp = self._client.chat(req, tools=schemas)
             # 记录每个响应的 token 用量 + 缓存命中（M2 度量尺子）
@@ -193,6 +207,10 @@ class Agent:
                     )
                 else:
                     result = self._registry.execute(name, args)
+                # 失败统计：错误结果也计数（坏 JSON 参数 / 未知工具 / 执行失败）——
+                # 模型容易忽略自己反复调同一个失败工具，状态栏替它提炼出来
+                if self._is_error_result(result):
+                    tool_failures[name] = tool_failures.get(name, 0) + 1
                 messages.append(
                     {"role": "tool", "tool_call_id": tc["id"], "content": result}
                 )
@@ -204,7 +222,7 @@ class Agent:
         last = messages[-1]
         last_content = last.get("content") if isinstance(last, dict) else None
         hint = f"模型最后输出: {last_content[:200]}" if last_content else "模型没有输出内容"
-        summary = self._unfinished_summary(task, tool_counts)
+        summary = self._unfinished_summary(task, tool_counts, tool_failures)
         failed_user = dict(messages[user_start])
         failed_user["content"] = f"{failed_user['content']}\n\n{summary}"
         self._history.append(failed_user)
@@ -218,25 +236,42 @@ class Agent:
         self._history.clear()
         self.cache_stats = {"hit": 0, "miss": 0}
 
-    def _status_bar(self, iteration: int, tool_counts: dict[str, int]) -> str:
+    def _status_bar(
+        self, iteration: int, tool_counts: dict[str, int], tool_failures: dict[str, int]
+    ) -> str:
         """生成状态栏文本（书 Ch2 §2.6：上下文末尾的 user-role meta 消息）。
 
-        三格信息（M2 第 2 步定的）：时间戳 / 工具计数 / TODO 进度。
+        格子（M2 第 2 步定，2026-08-25 修订去虚）：
+        - 时间戳：跨轮/跨天任务的时间锚点（保留）
+        - 工具计数：本轮已发起多少调用（含失败的——模型确实发起了）
+        - 失败计数：模型容易忽略自己反复调同一个失败工具，替它提炼出来
+        - 进度：剩余轮数预算；剩余 ≤ WARN_THRESHOLD 时追加「请收敛」警告
+        - TODO：暂时保留常量（等 M4 任务规划器升级成真步骤清单）
         刻意写成键值对（一行一值）而不是散文——论文实验证明：
         键值对让模型「瞥一眼」就能定位；散文等于让它再扫描一遍，效果更差。
         """
         now = self._clock()
         total = sum(tool_counts.values())
         detail = "、".join(f"{name}×{n}" for name, n in tool_counts.items()) or "无"
-        return (
-            f"{STATUS_BAR_HEADER}\n"
-            f"时间: {now:%Y-%m-%d %H:%M:%S}\n"
-            f"工具: 已调用 {total} 次（{detail}）\n"
-            f"进度: 第 {iteration}/{self.max_iterations} 轮\n"
-            "TODO: 输出最终回答"
+        fail_detail = (
+            "、".join(f"{name}×{n}" for name, n in tool_failures.items()) or "无"
         )
+        remaining = self.max_iterations - iteration
+        lines = [
+            f"{STATUS_BAR_HEADER}",
+            f"时间: {now:%Y-%m-%d %H:%M:%S}",
+            f"工具: 已调用 {total} 次（{detail}）",
+            f"失败: {fail_detail}",
+            f"进度: 第 {iteration}/{self.max_iterations} 轮（剩余 {remaining} 轮）",
+        ]
+        if remaining <= WARN_THRESHOLD:
+            lines.append(f"⚠ 剩余 {remaining} 轮：请收敛，尽快输出最终回答")
+        lines.append("TODO: 输出最终回答")
+        return "\n".join(lines)
 
-    def _unfinished_summary(self, task: str, tool_counts: dict[str, int]) -> str:
+    def _unfinished_summary(
+        self, task: str, tool_counts: dict[str, int], tool_failures: dict[str, int]
+    ) -> str:
         """生成熔断 [UNFINISHED] 摘要（复用状态栏格式）。
 
         四个字段对应 2026-08-24 拍板：任务目标 / 已完成步骤 / 下一步 / 失败点。
@@ -247,15 +282,33 @@ class Agent:
         now = self._clock()
         total = sum(tool_counts.values())
         detail = "、".join(f"{name}×{n}" for name, n in tool_counts.items()) or "无"
+        fail_total = sum(tool_failures.values())
+        fail_detail = (
+            "、".join(f"{name}×{n}" for name, n in tool_failures.items()) or "无"
+        )
         goal = task if len(task) <= 100 else task[:97] + "..."
         return (
             f"{UNFINISHED_HEADER}\n"
             f"时间: {now:%Y-%m-%d %H:%M:%S}\n"
             f"任务目标: {goal}\n"
-            f"已完成: 工具调用 {total} 次（{detail}）\n"
+            f"已完成: 工具调用 {total} 次（{detail}），失败 {fail_total} 次（{fail_detail}）\n"
             "下一步: 输出最终回答（未完成）\n"
             f"失败点: 达到最大迭代次数 {self.max_iterations}（熔断）"
         )
+
+    @staticmethod
+    def _is_error_result(result: str) -> bool:
+        """判断工具返回结果是否是错误（registry 层的错误协议）。
+
+        registry.execute 失败时返回 `{"error": "..."}`（未知工具 / 参数错误 /
+        工具执行失败），坏 JSON 参数的回填也是同构——都算失败。
+        用 json.loads 而不是字符串前缀匹配，避免误判工具正常返回的 JSON。
+        """
+        try:
+            data = json.loads(result)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(data, dict) and "error" in data
 
     def _record_usage(self, usage: dict[str, Any]) -> None:
         """累计本轮 token 用量与 Prompt Cache 命中（M2 度量尺子）。
