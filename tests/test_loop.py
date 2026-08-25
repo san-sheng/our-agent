@@ -18,10 +18,17 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
 
-from agent.loop import STATUS_BAR_HEADER, SYSTEM_PROMPT, UNFINISHED_HEADER, Agent
+from agent.loop import (
+    SKILLS_HEADER,
+    STATUS_BAR_HEADER,
+    SYSTEM_PROMPT,
+    UNFINISHED_HEADER,
+    Agent,
+)
 from llm.client import LLMClient
 from tools.builtin import default_registry
 
@@ -51,21 +58,36 @@ class _FakeClient:
 
 
 def _make_agent(
-    fake: _FakeClient, max_iterations: int = 10, clock: Callable | None = None
+    fake: _FakeClient,
+    max_iterations: int = 10,
+    clock: Callable | None = None,
+    skills_dir: Path | None = None,
 ) -> Agent:
     # 类型上 client 是 LLMClient，但 FakeClient 实现了相同的 chat 接口——
     # 鸭子类型，测试注入用
     kwargs: dict = {}
     if clock is not None:
         kwargs["clock"] = clock
-    return Agent(fake, default_registry(), max_iterations=max_iterations, verbose=False, **kwargs)  # type: ignore[arg-type]
+    if skills_dir is not None:
+        kwargs["skills_dir"] = skills_dir
+    # skills_dir 同时传给 registry（LoadSkill 工具）和 Agent（元数据扫描）——
+    # 两边必须指向同一目录，见 loop.py __init__ 注释
+    return Agent(  # type: ignore[arg-type]  # client 是 FakeClient（鸭子类型）
+        fake,
+        default_registry(skills_dir=skills_dir),
+        max_iterations=max_iterations,
+        verbose=False,
+        **kwargs,
+    )
 
 
 def _strip_status(messages: list[dict]) -> list[dict]:
-    """滤掉框架注入的状态栏 meta 消息，剩下核心轨迹。
+    """滤掉框架注入的 meta 消息（状态栏 + 技能目录），剩下核心轨迹。
 
-    状态栏是上下文末尾的 user-role meta 消息（书 Ch2 §2.6），
-    不属于对话主体；断言轨迹结构时先滤掉，断言才聚焦在「轨迹」本身。
+    状态栏是上下文末尾的 user-role meta 消息（书 Ch2 §2.6）；M2 第 4 步
+    增加同类的【可用技能】元数据（书 Ch2 §Skills 第一层）。两者都不是
+    对话主体（用户任务、模型回答、工具结果），断言轨迹结构时先滤掉，
+    断言才聚焦在「轨迹」本身。
     """
     return [
         m
@@ -73,7 +95,10 @@ def _strip_status(messages: list[dict]) -> list[dict]:
         if not (
             m["role"] == "user"
             and isinstance(m.get("content"), str)
-            and m["content"].startswith(STATUS_BAR_HEADER)
+            and (
+                m["content"].startswith(STATUS_BAR_HEADER)
+                or m["content"].startswith(SKILLS_HEADER)
+            )
         )
     ]
 
@@ -478,6 +503,119 @@ class LoopTest(unittest.TestCase):
         # 包裹没有破坏 _is_error_result 的判定：失败统计依然正确
         status2 = fake.requests[1][-1]
         self.assertIn("失败: no_such_tool×1", status2["content"])
+
+    # ── M2 第 4 步：Skills 按需加载（渐进式披露）──
+
+    def _make_skill_dir(self) -> Path:
+        """建临时技能目录：一个正常 skill + 一个缺 SKILL.md 的目录（防御路径）。"""
+        import shutil
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp(prefix="our-agent-test-skills-"))
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        (tmp / "alpha-tool").mkdir()
+        (tmp / "alpha-tool" / "SKILL.md").write_text(
+            "---\n"
+            "name: alpha-tool\n"
+            "description: 处理 alpha 格式文件时使用。Use when: 遇到 .alpha 文件；"
+            "Don't use: 其它任务。\n"
+            "---\n\n"
+            "# alpha-tool 完整规范\n"
+            "只有加载本技能才看得到的细节：alpha 文件要用 --fast 参数。\n",
+            encoding="utf-8",
+        )
+        (tmp / "broken").mkdir()  # 有目录但没 SKILL.md
+        return tmp
+
+    def test_skill_metadata_injected(self):
+        """请求末尾注入【可用技能】元数据：name + description，不含完整内容。
+
+        渐进式披露（书 Ch2 §Skills 第一层）：目录摘要常驻上下文，
+        完整 SKILL.md 按需加载——元数据里绝不带主体内容。
+        """
+        skills_dir = self._make_skill_dir()
+        fake = _FakeClient(
+            [{"role": "assistant", "content": "好", "tool_calls": None}]
+        )
+        agent = _make_agent(fake, skills_dir=skills_dir)
+        agent.run("简单任务")
+        meta = fake.requests[0][-2]  # 状态栏前一条
+        self.assertEqual(meta["role"], "user")
+        self.assertTrue(meta["content"].startswith(SKILLS_HEADER))
+        self.assertIn("alpha-tool", meta["content"])
+        # description 是路由条件（Use when 语气），框架原样透传
+        self.assertIn("处理 alpha 格式文件时使用", meta["content"])
+        # 渐进式披露：元数据不含 SKILL.md 主体细节
+        self.assertNotIn("--fast", meta["content"])
+        # 有目录但 SKILL.md 缺失 → 提示占位，不崩
+        self.assertIn("broken: (SKILL.md 缺失或格式错误)", meta["content"])
+
+    def test_load_skill_success(self):
+        """模型调 load_skill → 返回完整 SKILL.md，带来源标记（M2 第 3 步兼容）。"""
+        skills_dir = self._make_skill_dir()
+        fake = _FakeClient(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        _tc("call_1", "load_skill", '{"skill_name": "alpha-tool"}')
+                    ],
+                },
+                {"role": "assistant", "content": "好", "tool_calls": None},
+            ]
+        )
+        agent = _make_agent(fake, skills_dir=skills_dir)
+        agent.run("加载技能")
+        tool_msg = _strip_status(fake.requests[1])[-1]
+        self.assertIn('<tool_result tool="load_skill">', tool_msg["content"])
+        self.assertIn("# alpha-tool 完整规范", tool_msg["content"])
+        self.assertIn("--fast", tool_msg["content"])
+
+    def test_load_skill_unknown(self):
+        """加载不存在的技能 → 错误 + 计入失败统计（错误是模型的输入）。"""
+        skills_dir = self._make_skill_dir()
+        fake = _FakeClient(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        _tc("call_1", "load_skill", '{"skill_name": "no_such"}')
+                    ],
+                },
+                {"role": "assistant", "content": "好", "tool_calls": None},
+            ]
+        )
+        agent = _make_agent(fake, skills_dir=skills_dir)
+        agent.run("加载技能")
+        tool_msg = _strip_status(fake.requests[1])[-1]
+        self.assertIn("未知技能: no_such", tool_msg["content"])
+        # 失败统计锁死：错误结果同样被包裹、同样计数
+        status2 = fake.requests[1][-1]
+        self.assertIn("失败: load_skill×1", status2["content"])
+
+    def test_skill_metadata_not_persisted(self):
+        """技能元数据是 meta 消息，不进会话历史（与状态栏同机制）。
+
+        否则上一轮过期的技能目录会留在 history 里；
+        技能目录变化时（新增/删除 skill）旧目录不该污染多轮记忆。
+        """
+        skills_dir = self._make_skill_dir()
+        fake = _FakeClient(
+            [
+                {"role": "assistant", "content": "第一轮回答", "tool_calls": None},
+                {"role": "assistant", "content": "第二轮回答", "tool_calls": None},
+            ]
+        )
+        agent = _make_agent(fake, skills_dir=skills_dir)
+        agent.run("第一个问题")
+        agent.run("第二个问题")
+        first_of_second = fake.requests[1]
+        # history 部分不带技能元数据（干净的任务文本）
+        self.assertNotIn(SKILLS_HEADER, first_of_second[1]["content"])
+        # 元数据只出现在本次请求末尾（状态栏前一条）
+        self.assertIn(SKILLS_HEADER, first_of_second[-2]["content"])
 
 
 if __name__ == "__main__":

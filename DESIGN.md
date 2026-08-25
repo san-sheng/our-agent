@@ -101,6 +101,10 @@ our-agent/
      （<tool_result tool="...">，书 §提示注入 防御策略一），安全边界明确外部
      内容不可信、只遵循用户直接指令、不泄露系统提示词；先判断失败（原始
      result）后包裹（回填），失败统计不被破坏）
+   （M2 第 4 步已实现：Agent Skills 按需加载（书 Ch2 §动态提示词与 Agent
+     Skills）——skills/<name>/SKILL.md 技能目录，元数据（name + description）
+     作为【可用技能】meta 消息随请求注入（user-role，不进 history），模型
+     判断需要时用 load_skill 工具加载完整 SKILL.md（渐进式披露，方式三））
    ↓
 [llm/client.py] 发给模型 → 返回文本 或 tool_calls[]
    ↓ 如果是 tool_calls
@@ -220,7 +224,7 @@ our-agent/
 
 - [ ] **项目命名**：先叫 our-agent，要不要起个正式名字？
 - [x] **DeepSeek API key**：已解决（2026-08-02）——key 存项目根 `config.toml`（已 gitignore），`llm/client.py` 用 `tomllib`（Python 3.11 标准库）读取；优先级：显式传参 > config.toml，缺失抛 ValueError
-- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`），第 3 步 ReAct 主循环已完成（2026-08-15，见 `NOTES/M1-step3-loop.md`），端到端 demo 验收通过（2026-08-23，见 §6.3）。M2 拆小步（多轮对话 → 状态栏 → 提示注入 → Skills），第 1 步多轮会话 + 缓存度量已完成（2026-08-23，见 `NOTES/M2-step1-context.md`），第 2 步状态栏 + 熔断摘要已完成（2026-08-25，见 `NOTES/M2-step2-statusbar.md`），第 3 步 system prompt 结构化 + 提示注入防御已完成（2026-08-25，见 `NOTES/M2-step3-prompt-injection.md`）
+- [x] **学习节奏**：M1 拆成小步走（客户端 → 工具 → 循环 → CLI）——第 1 步 LLM 客户端已完成（2026-08-03，见 `NOTES/M1-notes.md`），第 2 步工具系统已完成（2026-08-03，见 `NOTES/M1-step2-tools.md`），第 3 步 ReAct 主循环已完成（2026-08-15，见 `NOTES/M1-step3-loop.md`），端到端 demo 验收通过（2026-08-23，见 §6.3）。M2 拆小步（多轮对话 → 状态栏 → 提示注入 → Skills），第 1 步多轮会话 + 缓存度量已完成（2026-08-23，见 `NOTES/M2-step1-context.md`），第 2 步状态栏 + 熔断摘要已完成（2026-08-25，见 `NOTES/M2-step2-statusbar.md`），第 3 步 system prompt 结构化 + 提示注入防御已完成（2026-08-25，见 `NOTES/M2-step3-prompt-injection.md`），第 4 步 Skills 按需加载已完成（2026-08-25，见 `NOTES/M2-step4-skills.md`）——**M2 上下文工程整体完成**
 - [ ] **界面**：M1 先用 CLI。要不要一开始就预留 Telegram 接口的位置（只留设计位，不实现）？
 - [x] **熔断轨迹处理**：已拍板（2026-08-24）且已实现（2026-08-25，M2 第 2 步）——熔断时生成 `[UNFINISHED]` 摘要（任务目标/已完成/下一步/失败点，复用状态栏格式）写入 history，不死记原始轨迹；见 `NOTES/M2-step2-statusbar.md`
 - [ ] **git**：要不要建本地 git 仓库管理？建的话用本地分支（我们 Hermes 的经验：自己用的代码别推到官方）
@@ -231,7 +235,7 @@ our-agent/
 
 - [x] v0.1 设计文档（2026-07-31）
 - [x] M1 最小 ReAct 闭环（2026-08-23 验收通过：端到端 demo「读 DESIGN.md 统计行数写 stats.txt」两次跑结果一致，223 行）
-- [ ] M2 上下文工程（进行中：第 1 步多轮会话 + 缓存度量完成 2026-08-23；第 2 步状态栏 + 熔断摘要完成 2026-08-25；第 3 步 system prompt 结构化 + 提示注入防御完成 2026-08-25；剩第 4 步 Skills 按需加载）
+- [x] M2 上下文工程（2026-08-25 整体完成：第 1 步多轮会话 + 缓存度量 08-23；第 2 步状态栏 + 熔断摘要 08-25；第 3 步 system prompt 结构化 + 提示注入防御 08-25；第 4 步 Skills 按需加载 08-25）
 - [ ] M3 记忆与知识库
 - [ ] M4 Coding Agent 深化
 - [ ] M5 评估

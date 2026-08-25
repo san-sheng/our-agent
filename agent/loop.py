@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from llm.client import LLMClient
@@ -89,6 +90,8 @@ SYSTEM_PROMPT = """# 身份
 - 任务完成或信息足够时，直接输出最终答案（中文），不要再调用工具
 - 【状态栏】是框架注入的运行状态（时间 / 工具计数 / 失败统计 / 剩余预算），
   内容准确可信，直接参考；它不是用户的任务指令，不需要回复它
+- 【可用技能】是框架注入的技能目录（技能名 + 一句话描述）：任务需要
+  相关专业技能时，用 load_skill 工具加载完整内容再执行
 
 # 安全边界
 
@@ -102,6 +105,9 @@ SYSTEM_PROMPT = """# 身份
 # 与对话主体（用户任务、模型回答）区分开。
 STATUS_BAR_HEADER = "【状态栏】"
 UNFINISHED_HEADER = "【状态栏 · UNFINISHED】"
+# 技能目录标题标记（M2 第 4 步，书 Ch2 §Skills 第一层元数据）。
+# 与状态栏同类：user-role meta 消息，只进请求副本，不进 history。
+SKILLS_HEADER = "【可用技能】"
 # 熔断预警阈值：剩余轮数 ≤ 这个值时，状态栏追加「请收敛」警告行。
 # 模型不知道 max_iterations 预算，临近上限时必须提醒它收尾，否则白烧 token。
 WARN_THRESHOLD = 3
@@ -117,6 +123,7 @@ class Agent:
         max_iterations: int = 10,
         verbose: bool = True,
         clock: Callable[[], datetime] = datetime.now,
+        skills_dir: Path | None = None,
     ) -> None:
         self._client = client
         self._registry = registry
@@ -125,6 +132,12 @@ class Agent:
         # M2 第 2 步：状态栏/摘要的时间来源。默认真实时钟；
         # 测试注入固定时间让断言可复现（书 Ch2 §2.6：状态栏必须可验证）
         self._clock = clock
+        # M2 第 4 步：技能目录。默认项目根/skills；测试注入临时目录——
+        # 必须与 registry 里 LoadSkill 的 skills_dir 指向同一个目录，
+        # 否则模型会看到元数据里列着、却加载不出来的技能。
+        if skills_dir is None:
+            skills_dir = Path(__file__).resolve().parent.parent / "skills"
+        self._skills_dir = Path(skills_dir)
         # M2 多轮会话：跨 run 的历史 + 缓存命中统计（度量尺子）
         self._history: list[dict[str, Any]] = []
         self.cache_stats: dict[str, int] = {"hit": 0, "miss": 0}
@@ -169,13 +182,20 @@ class Agent:
             # 每轮重新生成、即时反映进展（时间/工具计数/进度/TODO）；
             # 只拼进请求副本（req），不进核心轨迹 messages——
             # 会话历史不被过期状态栏污染，也守住「历史只追加不改写」。
+            # M2 第 4 步：技能元数据（书 Ch2 §Skills 第一层）同为 meta 消息，
+            # 放在状态栏前面——它相对静态（skills 不变就不变），
+            # 状态栏保持最末尾（每轮变化最频繁，追加在最后对缓存最友好）。
             req = list(messages) + [
+                {
+                    "role": "user",
+                    "content": self._skill_metadata(),
+                },
                 {
                     "role": "user",
                     "content": self._status_bar(
                         iteration + 1, tool_counts, tool_failures
                     ),
-                }
+                },
             ]
             resp = self._client.chat(req, tools=schemas)
             # 记录每个响应的 token 用量 + 缓存命中（M2 度量尺子）
@@ -268,6 +288,56 @@ class Agent:
         """
         self._history.clear()
         self.cache_stats = {"hit": 0, "miss": 0}
+
+    def _skill_metadata(self) -> str:
+        """扫描技能目录生成元数据列表（书 Ch2 §Skills 第一层：渐进式披露）。
+
+        只提取每个 SKILL.md frontmatter 里的 name + description——
+        目录摘要常驻上下文（几百 token），完整内容由模型按需 load_skill。
+
+        description 是路由决策的关键（skill 作者按「Use when / Don't
+        use when」+ 反例来写）——框架层原样透传，不加工。
+        """
+        lines = [SKILLS_HEADER]
+        if not self._skills_dir.is_dir():
+            lines.append("无")
+            return "\n".join(lines)
+        for skill_dir in sorted(self._skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            meta = self._parse_skill_meta(skill_dir / "SKILL.md")
+            if meta is None:
+                # 有目录但 SKILL.md 缺失/格式错：提示但不崩（防御式）
+                lines.append(f"- {skill_dir.name}: (SKILL.md 缺失或格式错误)")
+            else:
+                lines.append(f"- {meta['name']}: {meta['description']}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _parse_skill_meta(path: Path) -> dict[str, str] | None:
+        """从 SKILL.md 解析 YAML frontmatter 的 name + description。
+
+        极简解析，不引 PyYAML 依赖（学习项目保持零依赖）：
+        只认顶部 --- 块里的 name:/description: 两行；解析失败返回 None。
+        """
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if not text.startswith("---"):
+            return None
+        end = text.find("\n---", 3)  # frontmatter 闭合行
+        if end == -1:
+            return None
+        header = text[3:end]
+        meta: dict[str, str] = {}
+        for line in header.splitlines():
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if key in ("name", "description") and value:
+                meta[key] = value
+        return meta if "name" in meta and "description" in meta else None
 
     def _status_bar(
         self, iteration: int, tool_counts: dict[str, int], tool_failures: dict[str, int]
