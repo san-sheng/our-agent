@@ -232,6 +232,40 @@ read_file 和 write_file 两步，还没来得及输出最终回答，所以状�
 缓存观察：状态栏追加在上下文**末尾**，前缀（system + history + 任务 + 轨迹）稳定，
 命中率在稳定轮次回到 97%（第 4 轮 hit=4864/miss=163）——追加尾部不破坏 KV Cache 前缀。
 
+### 6.2 修订版冒烟（2026-08-25，失败统计 + 剩余预算）
+
+去虚修订后同一套真实 API 冒烟再跑一遍：
+
+```text
+=== R1：多步任务，max_iterations=2（逼熔断）===
+熔断后 history 摘要：
+【状态栏 · UNFINISHED】
+已完成: 工具调用 3 次（run_command×1、read_file×1、write_file×1），失败 0 次（无）
+下一步: 输出最终回答（未完成）
+失败点: 达到最大迭代次数 2（熔断）
+
+=== R2：追问接着办完（max_iterations=6）===
+[R2 返回] 任务已完成 ✅ ……wc -l DESIGN.md 共 234 行；已写入 /tmp/our-agent-stats2.txt。
+（第 3 轮完成；该轮缓存命中率回到 96%，hit=4864/miss=207）
+
+=== R3：读不存在的文件（触发失败统计）===
+第 2 轮状态栏：
+工具: 已调用 1 次（read_file×1）
+失败: read_file×1
+模型行为：看到失败后没有重复调失败工具，第 2 轮直接收尾回答——没进死循环
+```
+
+四个验证点：
+
+1. **失败格注入**：read_file 返回 `{"error": "文件不存在"}` → 第 2 轮状态栏
+   「失败: read_file×1」——registry 错误协议被 `_is_error_result` 正确识别
+2. **模型不重复失败调用**：失败格 + tool 消息里的错误双重提示下，
+   模型选择换策略/收尾，没陷入「反复调同一个失败工具」的 ReAct 死循环
+3. **临近警告生效**：剩余 1/0 轮（R1）与剩余 3 轮（阈值边界，R2）都出现
+   「⚠ 请收敛」；剩余 5/4 轮不出现——阈值边界正确
+4. **接着办完链路不受修订影响**：R2 靠摘要补齐 read → wc → write → 验证，
+   234 行一致（可复现）
+
 ## 7. 学习点自查
 
 - [x] 上下文窗口为什么是「只有一半的检索引擎」/「提炼层」是什么 →
@@ -258,7 +292,7 @@ read_file 和 write_file 两步，还没来得及输出最终回答，所以状�
 
 ```
 agent/loop.py          # _status_bar() + _unfinished_summary() + clock 注入；熔断写摘要
-tests/test_loop.py     # _strip_status() 滤 meta 消息；+3 状态栏用例；test_break 改造
+tests/test_loop.py     # _strip_status() 滤 meta 消息；状态栏 5 用例（含修订新增失败统计/临近警告）；test_break 改造
 NOTES/M2-step2-statusbar.md  # 本文
 DESIGN.md              # §4.1/§4.2/§9/进度 回填
 ```
